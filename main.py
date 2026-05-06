@@ -1,112 +1,171 @@
 import os
-import httpx
+import asyncio
 import logging
-from fastapi import FastAPI, Request, HTTPException
-from google import genai
+import json
+import threading
+from flask import Flask
+from telegram import Update
+from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
+import google.generativeai as genai
+from mi_service_fix import MiAccount, MiHealth, XiaomiLoginError
 from dotenv import load_dotenv
 
-# Load environment variables
 load_dotenv()
 
-app = FastAPI()
+# Konfiguracja Gemini
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+model = genai.GenerativeModel('gemini-flash-latest')
 
-# Configuration
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "supersecret_default")
+# Serwer Flask dla platformy Render (aby zapobiec uśpieniu)
+app = Flask('')
 
-# Logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+@app.route('/')
+def home():
+    return "Serwer bota aktywny."
 
-if not TELEGRAM_TOKEN or not GEMINI_API_KEY:
-    logger.error("Missing environment variables: TELEGRAM_TOKEN or GEMINI_API_KEY")
+def run_flask():
+    port = int(os.environ.get('PORT', 8080))
+    app.run(host='0.0.0.0', port=port)
 
-# Initialize Gemini Client
-client = genai.Client(api_key=GEMINI_API_KEY)
-
-TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
-
-SYSTEM_PROMPT = """
-Jesteś pomocnym asystentem treningowym. 
-Odpowiadaj po polsku, krótko i konkretnie. 
-Jeśli pytanie dotyczy treningu, dawaj praktyczne wskazówki.
-"""
-
-@app.get("/")
-async def root():
-    return {"status": "ok", "bot": "active"}
-
-@app.post("/telegram/webhook")
-async def telegram_webhook(request: Request):
-    # Security: check secret token from Telegram
-    secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
-    if secret != WEBHOOK_SECRET:
-        logger.warning("Invalid secret token received")
-        raise HTTPException(status_code=403, detail="Invalid secret")
-
+# Logika pobierania danych z Xiaomi Mi Fitness
+async def fetch_workout_data():
+    account = None
     try:
-        data = await request.json()
-    except Exception:
-        return {"ok": False, "error": "Invalid JSON"}
-
-    message = data.get("message")
-    if not message:
-        return {"ok": True}
-
-    chat_id = message["chat"]["id"]
-    text = message.get("text", "")
-
-    if not text:
-        await send_message(chat_id, "Na razie obsługuję tylko wiadomości tekstowe.")
-        return {"ok": True}
-
-    if text == "/start":
-        await send_message(chat_id, "Cześć! Jestem Twoim asystentem treningowym AI. Napisz mi o swoim treningu!")
-        return {"ok": True}
-
-    # Prepare prompt for Gemini
-    prompt = f"{SYSTEM_PROMPT}\n\nUżytkownik: {text}"
-
-    try:
-        # Use Gemini 2.0 Flash
-        response = client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=prompt
+        account = MiAccount(
+            username=os.getenv("XIAOMI_USER"),
+            password=os.getenv("XIAOMI_PASS"),
+            token_path="./token.json"
         )
-        answer = response.text if response.text else "Nie udało mi się przygotować odpowiedzi."
+        health = MiHealth(account)
+
+        logging.info("Próba pobrania listy treningów z Xiaomi...")
+        data = await health.get_workout_list(limit=1)
+
+        if not data or 'list' not in data or len(data['list']) == 0:
+            logging.warning(f"Brak danych treningowych lub błąd: {data}")
+            return None
+
+        workout_id = data['list'][0]['workoutId']
+        logging.info(f"Pobieranie szczegółów dla treningu ID: {workout_id}")
+        detail = await health.get_workout_detail(workout_id)
+        return detail
+
+    except XiaomiLoginError:
+        raise
     except Exception as e:
-        logger.error(f"Gemini API error: {e}")
-        answer = "Wystąpił błąd podczas komunikacji z AI."
+        logging.error(f"Błąd komunikacji z Xiaomi: {e}")
+        return None
+    finally:
+        if account:
+            await account.close()
 
-    await send_message(chat_id, answer[:4000])
-    return {"ok": True}
+# Obsługa komend Telegrama
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Cześć! Jestem Twoim asystentem sportowym AI.\n\n"
+        "Co mogę zrobić:\n"
+        "1. /analiza - Pobiorę Twój ostatni trening z Mi Fitness i go przeanalizuję.\n"
+        "2. /status - Sprawdzę czy wszystko działa.\n"
+        "3. Pisz do mnie śmiało - możemy porozmawiać o sporcie, diecie lub czymkolwiek chcesz!"
+    )
 
-async def send_message(chat_id: int, text: str):
-    url = f"{TELEGRAM_API}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": text
-    }
-    async with httpx.AsyncClient() as http_client:
-        try:
-            await http_client.post(url, json=payload)
-        except Exception as e:
-            logger.error(f"Telegram send error: {e}")
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    status_text = "📊 Status systemów:\n"
+    
+    try:
+        model.generate_content("test")
+        status_text += "✅ Gemini AI: Połączono\n"
+    except Exception as e:
+        status_text += f"❌ Gemini AI: Błąd ({e})\n"
+        
+    if os.getenv("XIAOMI_USER") and os.getenv("XIAOMI_PASS"):
+        status_text += f"✅ Xiaomi: Dane logowania ({os.getenv('XIAOMI_USER')})\n"
+    else:
+        status_text += "❌ Xiaomi: Brak danych logowania w .env\n"
+        
+    await update.message.reply_text(status_text)
 
-@app.post("/set-webhook")
-async def set_webhook():
-    # RENDER_EXTERNAL_URL is automatically provided by Render
-    webhook_url = os.getenv("RENDER_EXTERNAL_URL")
-    if not webhook_url:
-        raise HTTPException(status_code=500, detail="Missing RENDER_EXTERNAL_URL")
+async def analiza(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    status_msg = await update.message.reply_text("Pobieram pełne dane z Twojego konta Mi Fitness... Proszę o chwilę.")
 
-    url = f"{TELEGRAM_API}/setWebhook"
-    payload = {
-        "url": f"{webhook_url}/telegram/webhook",
-        "secret_token": WEBHOOK_SECRET
-    }
+    try:
+        raw_data = await fetch_workout_data()
+        if not raw_data:
+            await status_msg.edit_text("Nie udało się pobrać danych (brak nowych treningów). Upewnij się, że Twoje treningi są zsynchronizowane w aplikacji Mi Fitness.")
+            return
+    except XiaomiLoginError as e:
+        await status_msg.edit_text(f"❌ Błąd logowania Xiaomi:\n\n{e.description}")
+        return
+    except Exception as e:
+        logging.error(f"Błąd podczas analizy: {e}")
+        await status_msg.edit_text("Wystąpił nieoczekiwany błąd podczas pobierania danych.")
+        return
 
-    async with httpx.AsyncClient() as http_client:
-        resp = await http_client.post(url, json=payload)
-        return resp.json()
+    await status_msg.edit_text("Dane pobrane! Gemini AI rozpoczyna analizę Twojego treningu...")
+
+    prompt = f"""
+    Jesteś profesjonalnym trenerem sportowym. Przeanalizuj poniższe dane JSON z aplikacji Mi Fitness.
+    
+    Zadania:
+    1. Zidentyfikuj sport i podaj kluczowe statystyki (czas, dystans, kalorie, tętno).
+    2. Wyciągnij zaawansowane wnioski (np. tempo, kadencja, strefy tętna).
+    3. Podaj 3 konkretne rady, jak poprawić ten wynik w przyszłości.
+
+    Odpowiadaj po polsku, w sposób motywujący i techniczny.
+
+    Dane treningu:
+    {json.dumps(raw_data)[:8000]}
+    """
+
+    try:
+        response = model.generate_content(prompt)
+        await status_msg.edit_text(response.text)
+    except Exception as e:
+        logging.error(f"Błąd Gemini: {e}")
+        await status_msg.edit_text("Wystąpił błąd podczas generowania analizy przez AI.")
+
+# Obsługa zwykłej konwersacji
+async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_text = update.message.text
+    if not user_text:
+        return
+
+    # Pokazujemy, że bot "pisze"
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+
+    try:
+        # Możemy dodać kontekst, że bot jest asystentem sportowym
+        full_prompt = f"Jesteś asystentem sportowym AI. Użytkownik mówi: {user_text}"
+        response = model.generate_content(full_prompt)
+        await update.message.reply_text(response.text)
+    except Exception as e:
+        logging.error(f"Błąd Gemini w czacie: {e}")
+        await update.message.reply_text("Przepraszam, mam chwilowy problem z myśleniem. Spróbuj za chwilę!")
+
+if __name__ == '__main__':
+    logging.basicConfig(
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        level=logging.INFO
+    )
+
+    # Uruchomienie serwera Flask w tle
+    threading.Thread(target=run_flask, daemon=True).start()
+
+    # Konfiguracja bota Telegram
+    token = os.getenv("TELEGRAM_TOKEN")
+    if not token:
+        logging.error("Brak TELEGRAM_TOKEN w środowisku!")
+        exit(1)
+
+    application = ApplicationBuilder().token(token).build()
+    
+    # Handlery
+    application.add_handler(CommandHandler('start', start))
+    application.add_handler(CommandHandler('status', status))
+    application.add_handler(CommandHandler('analiza', analiza))
+    
+    # Każdy inny tekst wysyłamy do Gemini
+    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), chat))
+
+    logging.info("Bot został uruchomiony i czeka na wiadomości...")
+    application.run_polling()
