@@ -146,16 +146,19 @@ def run_bot():
         logging.error("Brak TELEGRAM_TOKEN w środowisku!")
         return
 
-    application = ApplicationBuilder().token(token).build()
-    
-    # Handlery
-    application.add_handler(CommandHandler('start', start))
-    application.add_handler(CommandHandler('status', status))
-    application.add_handler(CommandHandler('analiza', analiza))
-    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), chat))
+    try:
+        application = ApplicationBuilder().token(token).build()
+        
+        # Handlery
+        application.add_handler(CommandHandler('start', start))
+        application.add_handler(CommandHandler('status', status))
+        application.add_handler(CommandHandler('analiza', analiza))
+        application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), chat))
 
-    logging.info("Bot został uruchomiony i czeka na wiadomości...")
-    application.run_polling()
+        logging.info("Bot został uruchomiony i czeka na wiadomości...")
+        application.run_polling()
+    except Exception as e:
+        logging.error(f"Krytyczny błąd bota: {e}")
 
 if __name__ == '__main__':
     logging.basicConfig(
@@ -166,6 +169,7 @@ if __name__ == '__main__':
     # Uruchamiamy bota w tle, żeby nie blokował serwera
     threading.Thread(target=run_bot, daemon=True).start()
 
-    # Uruchamiamy serwer, którego wymaga Render
+    # Uruchamiamy serwer Flask (wymagany przez platformę Render)
     port = int(os.environ.get("PORT", 10000))
+    logging.info(f"Uruchamianie serwera Flask na porcie {port}...")
     app.run(host='0.0.0.0', port=port)
