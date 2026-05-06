@@ -4,3 +4,4 @@ aiofiles
 python-telegram-bot
 google-generativeai
 miservice
+python-dotenv

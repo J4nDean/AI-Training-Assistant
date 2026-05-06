@@ -161,15 +161,25 @@ def run_bot():
         logging.error(f"Krytyczny błąd bota: {e}")
 
 if __name__ == '__main__':
-    logging.basicConfig(
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        level=logging.INFO
-    )
+    try:
+        logging.basicConfig(
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            level=logging.INFO
+        )
 
-    # Uruchamiamy bota w tle, żeby nie blokował serwera
-    threading.Thread(target=run_bot, daemon=True).start()
+        logging.info("Start aplikacji...")
 
-    # Uruchamiamy serwer Flask (wymagany przez platformę Render)
-    port = int(os.environ.get("PORT", 10000))
-    logging.info(f"Uruchamianie serwera Flask na porcie {port}...")
-    app.run(host='0.0.0.0', port=port)
+        # Uruchamiamy bota w tle, żeby nie blokował serwera
+        bot_thread = threading.Thread(target=run_bot, daemon=True)
+        bot_thread.start()
+
+        # Uruchamiamy serwer Flask (wymagany przez platformę Render)
+        port = int(os.environ.get("PORT", 10000))
+        logging.info(f"Uruchamianie serwera Flask na porcie {port}...")
+        
+        # W nowszych wersjach Flask app.run() może próbować używać sygnałów
+        # Na Renderze w wątku głównym powinno być OK.
+        app.run(host='0.0.0.0', port=port)
+    except Exception as e:
+        logging.error(f"KRYTYCZNY BŁĄD URUCHAMIANIA: {e}", exc_info=True)
+        os._exit(1)
