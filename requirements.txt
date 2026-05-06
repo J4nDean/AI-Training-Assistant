@@ -1,4 +1,4 @@
+aiohttp
 python-telegram-bot
 google-generativeai
-aiohttp
 miservice
