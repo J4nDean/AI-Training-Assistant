@@ -156,7 +156,8 @@ def run_bot():
         application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), chat))
 
         logging.info("Bot został uruchomiony i czeka na wiadomości...")
-        application.run_polling()
+        # stop_signals=None jest konieczne, gdy bot działa w wątku pobocznym
+        application.run_polling(stop_signals=None)
     except Exception as e:
         logging.error(f"Krytyczny błąd bota: {e}")
 
