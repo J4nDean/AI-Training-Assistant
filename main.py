@@ -17,15 +17,11 @@ genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 model = genai.GenerativeModel('gemini-flash-latest')
 
 # Serwer Flask dla platformy Render (aby zapobiec uśpieniu)
-app = Flask('')
+app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Serwer bota aktywny."
-
-def run_flask():
-    port = int(os.environ.get('PORT', 8080))
-    app.run(host='0.0.0.0', port=port)
+    return "Serwer działa!", 200
 
 # Logika pobierania danych z Xiaomi Mi Fitness
 async def fetch_workout_data():
@@ -142,20 +138,13 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.error(f"Błąd Gemini w czacie: {e}")
         await update.message.reply_text("Przepraszam, mam chwilowy problem z myśleniem. Spróbuj za chwilę!")
 
-if __name__ == '__main__':
-    logging.basicConfig(
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        level=logging.INFO
-    )
-
-    # Uruchomienie serwera Flask w tle
-    threading.Thread(target=run_flask, daemon=True).start()
-
-    # Konfiguracja bota Telegram
+# Funkcja uruchamiająca bota w tle
+def run_bot():
+    logging.info("Inicjalizacja bota Telegram...")
     token = os.getenv("TELEGRAM_TOKEN")
     if not token:
         logging.error("Brak TELEGRAM_TOKEN w środowisku!")
-        exit(1)
+        return
 
     application = ApplicationBuilder().token(token).build()
     
@@ -163,9 +152,20 @@ if __name__ == '__main__':
     application.add_handler(CommandHandler('start', start))
     application.add_handler(CommandHandler('status', status))
     application.add_handler(CommandHandler('analiza', analiza))
-    
-    # Każdy inny tekst wysyłamy do Gemini
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), chat))
 
     logging.info("Bot został uruchomiony i czeka na wiadomości...")
     application.run_polling()
+
+if __name__ == '__main__':
+    logging.basicConfig(
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        level=logging.INFO
+    )
+
+    # Uruchamiamy bota w tle, żeby nie blokował serwera
+    threading.Thread(target=run_bot, daemon=True).start()
+
+    # Uruchamiamy serwer, którego wymaga Render
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
